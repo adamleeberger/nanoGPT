@@ -1,20 +1,27 @@
-# saves the mailbox dataset to a binary file for training. following was helpful:
-# https://github.com/HazyResearch/flash-attention/blob/main/training/src/datamodules/language_modeling_hf.py
+# saves the mailbox dataset to a binary file for training
+# loosely modeled after karpathy's nanogpt prepare.py script 
 
 import os
+import sys
 import array
 from tqdm import tqdm
 import numpy as np
 import tiktoken 
+import argparse
 
+# the larger the better; you get encoding weirdness at chunk boundaries
+ENCODING_CHUNKS_PER_TIC = 1000000
+
+parser = argparse.ArgumentParser(description='prepare mbox file')
+parser.add_argument('-f', '--file', required=True, help='File path (output of clean_mailbox.py script)')
+parser.add_argument('-n', '--num_bytes', type=int, default=sys.maxsize, help='number of bytes to process (default: all)')
+args = parser.parse_args()
+file_path = args.file
+n_bytes = args.num_bytes or 999999999999
 
 enc = tiktoken.get_encoding("gpt2")
 
-# number of workers in .map() call
-# good number to use is ~order number of cpu cores // 2
-num_proc = 8
-
-input_file_path = "foo"
+input_file_path = file_path
 print (f"Starting to read {input_file_path}")
 with open(input_file_path, 'r') as f:
     alldata = f.read()
@@ -28,10 +35,20 @@ dataset['train'] = alldata[:n1]
 dataset['val']   = alldata[n1:n1+n2]
 dataset['test']  = alldata[n1+n2:]
 
+# TODO: wrap in tqdm 
 print ("Tokenizing datasets using gpt2 BPE.")
 def encode(d):
-    encoded_tokens = enc.encode(d)
-    return encoded_tokens
+    num_bytes = len(d)
+    num_chunks = int(num_bytes / ENCODING_CHUNKS_PER_TIC) + 1
+    print (f"Encoding {num_bytes} bytes using {num_chunks} chunks...")
+    full_encoding = []
+    for i in tqdm(range(num_chunks)):
+        chunk_start = i * ENCODING_CHUNKS_PER_TIC
+        chunk_end = min((i+1) * ENCODING_CHUNKS_PER_TIC -1, num_bytes) 
+        byte_array = d[chunk_start:chunk_end]
+        encoded_chunk = enc.encode(byte_array)   
+        full_encoding.extend(encoded_chunk) # append to the full encoding
+    return full_encoding
 
 # TODO: wrap in tqdm 
 encoded_text = {}
@@ -39,7 +56,6 @@ for split in ['train', 'val', 'test']:
     print (f"Encoding {split} dataset...")
     encoded_text[split] = encode(dataset[split])
     filename = os.path.join(os.path.dirname(__file__), f'{split}.bin')
-    # Convert the encoded text to a byte array
     byte_array = array.array('i', encoded_text[split]).tobytes()
     n = len(encoded_text[split])
     with open(filename, 'wb') as file:
@@ -53,5 +69,5 @@ with open('train.bin', 'rb') as file:
 encoded_array = array.array('i')
 encoded_array.frombytes(encoded_bytes)
 decoded_text = enc.decode(encoded_array.tolist())
-print (decoded_text)
+#print (decoded_text)
 

@@ -13,11 +13,11 @@ import argparse
 EMAIL_SEPARATOR = "**EOM**"
 
 parser = argparse.ArgumentParser(description='pre-prepare mbox file')
-parser.add_argument('-f', '--file', help='File path')
+parser.add_argument('-f', '--file', required=True, help='File path')
 parser.add_argument('-n', '--messages', type=int, default=sys.maxsize, help='number of messages to process (default: all)')
 args = parser.parse_args()
 file_path = args.file
-n_messages_to_process = args.messages
+n_messages_to_process = args.messages or 999999999 
 
 mbox_file = file_path;
 
