@@ -8,12 +8,20 @@ import sys
 import mailbox
 from bs4 import BeautifulSoup
 import re
+import argparse
 
-# Path to your mbox file
-mbox_file = './start.mbox'
+EMAIL_SEPARATOR = "**EOM**"
 
-# running counter 
-multipart_messages = 0;
+parser = argparse.ArgumentParser(description='pre-prepare mbox file')
+parser.add_argument('-f', '--file', help='File path')
+parser.add_argument('-n', '--messages', type=int, default=sys.maxsize, help='number of messages to process (default: all)')
+args = parser.parse_args()
+file_path = args.file
+n_messages_to_process = args.messages
+
+mbox_file = file_path;
+
+multipart_messages = 0; # running counter 
 
 # extract text from HTML
 def extract_text(html):
@@ -29,14 +37,20 @@ def decode(m):
 print ("Opening mbox file " + mbox_file, file=sys.stderr);    
 mbox = mailbox.mbox(mbox_file)
 total_messages = len(mbox)
+quota = min (total_messages, n_messages_to_process)
 print (f"Found {total_messages} messages.", file=sys.stderr)
+print (f"Will process {quota} messages", file=sys.stderr) 
 
 # Iterate over each email in the mbox file
 n = 0;
 for message in mbox:
     n += 1
+    print (EMAIL_SEPARATOR + "\n") 
     if (n % 100 ==0 or n == total_messages ):
         print (f"Processed {n} messages; ; found {multipart_messages} multipart messages.", file=sys.stderr)
+
+    if (n >= quota):
+        break;
 
     # Extract the text content
     if message.is_multipart():
