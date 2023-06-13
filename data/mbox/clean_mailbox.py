@@ -6,7 +6,7 @@
 # June 2023
 
 import sys
-import glob
+#import glob
 import mailbox
 from tqdm import tqdm
 from bs4 import BeautifulSoup
@@ -15,61 +15,36 @@ import argparse
 import subprocess
 import warnings
 
-# supress warnings from bs (beautiful soup)
+# suppress beautiful soup warnings 
 warnings.filterwarnings("ignore", category=UserWarning, module='bs4')
 
-EMAIL_SEPARATOR = "**EOM**"
-# 100000000 # will split the mbox file into chunks of this # lines each
-LINES_PER_CHUNK = 1000000
-
-def canonicalize(email_address):
-    # JOE.sm.ith@GMAIL.com -> joesmith@gmail.com
-    email_address = email_address.lower()
-    idx = email_address.find("@gmail.com")
-    if idx > 0:
-        prefix = email_address[0:idx]
-        prefix = prefix.replace(".", "")
-        email_address = prefix + "@gmail.com"
-    return email_address
+EMAIL_SEPARATOR = "\n\n**EOM**\n\n"
+LINES_PER_CHUNK = 10000000  # will split the mbox file into chunks of this # lines each for processing in parallel
 
 # decode to utf-8 and remove any lines that can't be decoded
 def decode(m):
     text = m.get_payload(decode=True).decode('utf-8', errors="ignore")
     return text
 
-def process_mbox(mbox_file):
-    print(f"Processing {mbox_file}")
-    mbox = mailbox.mbox(mbox_file)
+def process_mbox(input_file, output_file):
+    print(f"Processing {input_file}")
+    mbox = mailbox.mbox(input_file)
     total_messages = len(mbox)
     print(f"Found {total_messages} messages.", file=sys.stderr)
-   
-    # segregate messages into sent and received. Some messages will be in both, of course.
-    sent_messages_output_file = mbox_file + ".sent"
-    received_messages_output_file = mbox_file + ".received"
-    fs = open(sent_messages_output_file, "w")
-    fr = open(received_messages_output_file, "w")
+    f = open(output_file, "w")
 
     # running counters
     n = 0
-    n_sent = 0
-    n_received = 0
     multipart_messages = 0
 
     # loop through messages in mbox
-    for message in tqdm(mbox):
+    for message in mbox:
         n += 1
-        f = canonicalize(str(message['From']))
-        t = canonicalize(str(message['To']))
-        cc = canonicalize(str(message['Cc']))
-        bcc = canonicalize(str(message['Bcc']))
-        belongs_in_sent_folder = True if my_email_address in str(f) else False
-        belongs_in_received_folder = True if my_email_address in str(t) or my_email_address in str(cc) or my_email_address in str(bcc) else False
 
         # Extract the text content
         text = ""
         if message.is_multipart():
-            # If the email is multipart (contains both HTML and plaintext),
-            # extract the plaintext part
+            # If the email is multipart (contains both HTML and plaintext), extract the plaintext part
             multipart_messages += 1
             for part in message.get_payload():
                 if part.get_content_type() == 'text/plain':
@@ -88,46 +63,36 @@ def process_mbox(mbox_file):
         lines = [line for line in lines if line.strip() != ""]
         text = '\n'.join(lines)
 
-        # Print the processed text to the appropriate file(s)
-        if belongs_in_sent_folder:
-            fs.write(text + EMAIL_SEPARATOR)
-            n_sent += 1
-        if belongs_in_received_folder:
-            fr.write(text + EMAIL_SEPARATOR)
-            n_received += 1
-
-    fr.close()
-    fs.close()
-    print(f"Processed {n} messages: {n_sent} sent messages, {n_received} received messages, {multipart_messages} multipart messages.", file=sys.stderr)
+        # save the processed text 
+        f.write(text + EMAIL_SEPARATOR)
+         
+    f.close()
+    print(f"Processed {n} messages: {multipart_messages} multipart messages.", file=sys.stderr)
 
 # script entry point here 
-
 parser = argparse.ArgumentParser(description='clean mbox file')
 parser.add_argument('-f', '--file', required=True, help='File path')
-parser.add_argument('-e', '--email_address', required=True, help='my email address')
 args = parser.parse_args()
-mbox_file = args.file
-my_email_address = canonicalize(args.email_address)
+input_file = args.file
+chunk_file_prefix = input_file + ".chunk_"
+output_file = input_file + ".clean"
 
-print("Splitting mbox file into chunks", file=sys.stderr)
-command = f"rm -f {mbox_file}.chunk_*"
+print("Deleting old chunkfiles", file=sys.stderr)
+command = f"rm -f {chunk_file_prefix}*"
 subprocess.run(command, shell=True)
-command = f"split -d -l {LINES_PER_CHUNK} {mbox_file} {mbox_file}.chunk_"
+print("Creating new chunkfiles", file=sys.stderr)
+command = f"split -d -l {LINES_PER_CHUNK} {input_file} {chunk_file_prefix}"
 subprocess.run(command, shell=True)
 
 # how many files did we create?
-command  = f"ls {mbox_file}.chunk_*"
+command  = f"ls {chunk_file_prefix}*"
 result = subprocess.run(command, shell=True, capture_output=True)
 chunk_files = result.stdout.decode().strip().splitlines()
-print(f"Breaking mbox into {len(chunk_files)} chunks")
 for chunk_file in chunk_files:
-    process_mbox(chunk_file)
-
+    process_mbox(chunk_file, chunk_file+ ".clean")
 
 print ("Merging intermediate files and cleaning up.")
-command = f"cat {mbox_file}.chunk_*.sent > {mbox_file}.sent"
+command = f"cat {chunk_file_prefix}*.clean > {output_file}"
 subprocess.run(command, shell=True)
-command = f"cat {mbox_file}.chunk_*.received > {mbox_file}.received"
-subprocess.run(command, shell=True)
-command = f"rm -f {mbox_file}.chunk_*"
+command = f"rm -f {chunk_file_prefix}*"
 subprocess.run(command, shell=True)
