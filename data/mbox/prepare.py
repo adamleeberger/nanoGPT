@@ -1,73 +1,89 @@
-# saves the mailbox dataset to a binary file for training
-# loosely modeled after karpathy's nanogpt prepare.py script 
+"""
+similar to mbox_char/prepare.py, but tokenizing via BPE, not char-level.
+"""
 
-import os
 import sys
-import array
-from tqdm import tqdm
+import os
+import pickle
+import requests
 import numpy as np
-import tiktoken 
+from tqdm import tqdm
+from collections import Counter
 import argparse
+import subprocess
+import tiktoken
+from datasets import load_dataset # huggingface datasets
+
+
+MIN_COUNT = 10 # min count to include in vocab
+ENCODING_DATATYPE = np.uint16
 
 # the larger the better; you get encoding weirdness at chunk boundaries
-ENCODING_CHUNKS_PER_TIC = 1000000
+BYTES_PER_CHUNK = 10000000 # 10MB -> 10 minutes    
 
+def process(text):
+    ids = enc.encode_ordinary(text) # encode_ordinary ignores any special tokens
+    ids.append(enc.eot_token) # add the end of text token, e.g. 50256 for gpt2 bpe
+    out = {'ids': ids, 'len': len(ids)}
+    return out
+
+def encode(s):
+    # writeme
+    return [stoi[c] for c in s] # encoder: take a string, output a list of integers
+
+def decode(l):
+    # writeme
+    return ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+
+
+# script entry point 
 parser = argparse.ArgumentParser(description='prepare mbox file')
 parser.add_argument('-f', '--file', required=True, help='File path (output of clean_mailbox.py script)')
-parser.add_argument('-n', '--num_bytes', type=int, default=sys.maxsize, help='number of bytes to process (default: all)')
 args = parser.parse_args()
-file_path = args.file
-n_bytes = args.num_bytes or 999999999999
+input_file = args.file
+output_prefix = input_file + "."
 
-enc = tiktoken.get_encoding("gpt2")
+# count lines in input file 
+command  = "wc " + input_file + " | awk '{print $1}'"
+result = subprocess.run(command, shell=True, capture_output=True)
+num_lines = int(result.stdout.decode().strip())
+print (f"num_lines: {num_lines}")
+split = int(0.9 * num_lines)
+command = f"split -d -l {split} {input_file} {output_prefix}chunk"
+subprocess.run(command, shell=True)
+command = f"mv {output_prefix}chunk00 {output_prefix}train"
+subprocess.run(command, shell=True)
+command = f"mv {output_prefix}chunk01 {output_prefix}val"
+subprocess.run(command, shell=True)
 
-input_file_path = file_path
-print (f"Starting to read {input_file_path}")
-with open(input_file_path, 'r') as f:
-    alldata = f.read()
-print (f"Finished reading {len(alldata)} bytes.")
+enc = tiktoken.get_encoding("gpt2")  #TODO: Try 'cl100k_base'
+vocab_size = enc.n_vocab
 
-# create train/test split (TODO: split randomly, vs. just taking the first 80%)
-n1 = int(len(alldata)* 0.8)
-n2 = int(len(alldata)* 0.1)
-dataset = {}
-dataset['train'] = alldata[:n1]
-dataset['val']   = alldata[n1:n1+n2]
-dataset['test']  = alldata[n1+n2:]
+tokenized = {}
+for batch in ['train', 'val']:
+    input_file = output_prefix + batch
 
-# TODO: wrap in tqdm 
-print ("Tokenizing datasets using gpt2 BPE.")
-def encode(d):
-    num_bytes = len(d)
-    num_chunks = int(num_bytes / ENCODING_CHUNKS_PER_TIC) + 1
-    print (f"Encoding {num_bytes} bytes using {num_chunks} chunks...")
-    full_encoding = []
-    for i in tqdm(range(num_chunks)):
-        chunk_start = i * ENCODING_CHUNKS_PER_TIC
-        chunk_end = min((i+1) * ENCODING_CHUNKS_PER_TIC -1, num_bytes) 
-        byte_array = d[chunk_start:chunk_end]
-        encoded_chunk = enc.encode(byte_array)   
-        full_encoding.extend(encoded_chunk) # append to the full encoding
-    return full_encoding
+    # read in the data
+    lines_read = 0 
+    n_tokens = 0
+    with open(input_file, "r") as file:
+        tokenized[batch] = []
+        for line in file:
+            lines_read += 1
+            line = line.rstrip()  # Remove trailing newline character
+            ids = enc.encode_ordinary(line)
+            ids.append(enc.eot_token) # add the end of text token, e.g. 50256 for gpt2 bpe  
+            n_tokens += len(ids)
+            tokenized[batch].extend(ids)
+    print(f"read {lines_read} lines from {input_file} and wrote {n_tokens} tokens.")
 
-# TODO: wrap in tqdm 
-encoded_text = {}
-for split in ['train', 'val', 'test']:
-    print (f"Encoding {split} dataset...")
-    encoded_text[split] = encode(dataset[split])
-    filename = os.path.join(os.path.dirname(__file__), f'{split}.bin')
-    byte_array = array.array('i', encoded_text[split]).tobytes()
-    n = len(encoded_text[split])
-    with open(filename, 'wb') as file:
-        file.write(byte_array)
-    print (f"Wrote {n} symbols to {filename}")
+# export to bin files
+train_ids = np.array(tokenized['train'], dtype=ENCODING_DATATYPE)
+val_ids = np.array(tokenized['val'], dtype=ENCODING_DATATYPE)
+train_ids.tofile(os.path.join(os.path.dirname(__file__), 'train.bin'))
+val_ids.tofile(os.path.join(os.path.dirname(__file__), 'val.bin'))
 
 print ("Sanity checking: here's the first 1000 symbols from training split:")
 filename = os.path.join(os.path.dirname(__file__), 'train.bin')
-with open('train.bin', 'rb') as file:
-    encoded_bytes = file.read(1000)
-encoded_array = array.array('i')
-encoded_array.frombytes(encoded_bytes)
-decoded_text = enc.decode(encoded_array.tolist())
-#print (decoded_text)
-
+encoded_bytes = np.fromfile(filename, dtype=ENCODING_DATATYPE, count=1000)
+print(enc.decode(encoded_bytes.tolist()))
